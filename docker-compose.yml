@@ -1,0 +1,7 @@
+services:
+    simpleca:
+        image: juandariogg/simpleca:latest
+        ports:
+            - 8008:8008
+        env_file: ".env"
+        network_mode: host
