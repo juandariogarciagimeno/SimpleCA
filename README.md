@@ -20,6 +20,7 @@ A simple Certificate Authority (CA) for mock and testing purposes
 - [x] Certificate Revocation
   - [x] Posting a .crt
   - [x] Posting a json containing the public key
+  - [x] OCSP Verification
 
 ---
 ## Configuration

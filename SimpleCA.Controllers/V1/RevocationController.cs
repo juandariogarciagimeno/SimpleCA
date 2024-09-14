@@ -15,11 +15,13 @@ namespace SimpleCA.Controllers.V1
     {
         private readonly IGetCrlPort getCrl;
         private readonly IRevokeCertPort revokeCert;
+        private readonly IVerifyOcspPort verifyOcsp;
 
-        public RevocationController(IGetCrlPort getCrl, IRevokeCertPort revokeCert)
+        public RevocationController(IGetCrlPort getCrl, IRevokeCertPort revokeCert, IVerifyOcspPort verifyOcsp)
         {
             this.getCrl = getCrl;
             this.revokeCert = revokeCert;
+            this.verifyOcsp = verifyOcsp;
         }
 
         [HttpGet("revocation.crl")]
@@ -56,5 +58,37 @@ namespace SimpleCA.Controllers.V1
             revokeCert.RevokeCert(request.certpk);
             return Ok();
         }
+
+        [HttpPost("ocsp")]
+        [MapToApiVersion(1)]
+        [ProducesResponseType(200)]
+        [Consumes("application/ocsp-request")]
+        public async Task<IActionResult> Ocsp()
+        {
+            var ocsp = await ReadRequestBody();
+            var ocspdata = verifyOcsp.VerifyOcsp(ocsp);
+            return File(ocspdata, "application/ocsp-response");
+        }
+
+        private async Task<byte[]> ReadRequestBody()
+        {
+            Request.EnableBuffering();
+            
+            using (var ms = new MemoryStream())
+            {
+                await Request.Body.CopyToAsync(ms);
+
+                return ms.ToArray();
+            }
+        }
+
+        //[HttpGet("ocsp")]
+        //[MapToApiVersion(1)]
+        //[ProducesResponseType(200)]
+        //public IActionResult Ocsp([FromForm] byte[] ocsp)
+        //{
+        //    var ocspdata = verifyOcsp.VerifyOcsp(ocsp);
+        //    return File(ocspdata, "application/ocsp-response");
+        //}
     }
 }

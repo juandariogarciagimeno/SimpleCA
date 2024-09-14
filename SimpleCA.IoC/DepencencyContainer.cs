@@ -17,6 +17,7 @@ namespace SimpleCA.IoC
             services.AddScoped<IEnsureCrlCreatedPort, EnsureCrlCreatedPort>();
             services.AddScoped<IGetCrlPort, GetCrlPort>();
             services.AddScoped<IRevokeCertPort, RevokeCertPort>();
+            services.AddScoped<IVerifyOcspPort, VerifyOcspPort>();
             
             return services;
         }

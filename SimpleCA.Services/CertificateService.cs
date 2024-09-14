@@ -1,10 +1,25 @@
-﻿using SimpleCA.Core.IServices;
+﻿using Org.BouncyCastle.Asn1;
+using Org.BouncyCastle.Ocsp;
+using Org.BouncyCastle.Security;
+using Org.BouncyCastle.X509;
+using SimpleCA.Core.IServices;
 using SimpleCA.Core.Models;
 using System;
+using System.Dynamic;
+using System.IO;
 using System.Numerics;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Crypto;
+using BCBigInteger = Org.BouncyCastle.Math.BigInteger;
+using X509Exts = Org.BouncyCastle.Asn1.X509.X509Extensions;
+using X509Extension = System.Security.Cryptography.X509Certificates.X509Extension;
+using X509Certificate = Org.BouncyCastle.X509.X509Certificate;
+using Org.BouncyCastle.Asn1.X509;
+using Org.BouncyCastle.Pkcs;
+using Org.BouncyCastle.Asn1.Ocsp;
 
 namespace SimpleCA.Services
 {
@@ -78,7 +93,7 @@ namespace SimpleCA.Services
                 var certificateRequest = new CertificateRequest(distinguishedName, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
 
                 certificateRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
-                certificateRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
+                certificateRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.NonRepudiation | X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
 
                 var ski = new X509SubjectKeyIdentifierExtension(certificateRequest.PublicKey, false);
                 certificateRequest.CertificateExtensions.Add(ski);
@@ -88,6 +103,67 @@ namespace SimpleCA.Services
 
                 return certificate;
             }
+        }
+
+        public byte[] VerifyOcsp(byte[] request)
+        {
+            var capk = GetCAAsymetrycKeyParameter();
+            var bcCa = DotNetUtilities.FromX509Certificate(GetPublicCA());
+
+            var ocspReq = new OcspReq(request);
+            var ocspRespGen = new BasicOcspRespGenerator(new RespID(bcCa.SubjectDN));
+            var certs = ocspReq.GetRequestList();
+
+            var crl = GetCrlObj();
+
+            foreach (var cert in certs)
+            {
+                var certid = cert.GetCertID();
+
+                var entry = crl.GetRevokedCertificate(certid.SerialNumber);
+
+                if (entry == null)
+                {
+                    ocspRespGen.AddResponse(certid, RevokedStatus.Good);
+                    continue;
+                }
+
+                Asn1OctetString reasonExtensionValue = entry.GetExtensionValue(X509Exts.ReasonCode);
+                DerEnumerated reasonCode = (DerEnumerated)Asn1Object.FromByteArray(reasonExtensionValue.GetOctets());
+                int reasonValue = reasonCode.Value.IntValue;
+
+                ocspRespGen.AddResponse(certid, new RevokedStatus(entry.RevocationDate, reasonValue));
+            }
+
+            var bresp = ocspRespGen.Generate("SHA256WithRSAEncryption", capk, null, DateTime.UtcNow);
+            var ocspgen = new OCSPRespGenerator();
+            var ocsp = ocspgen.Generate(OcspRespStatus.Successful, bresp);
+            return ocsp.GetEncoded();
+        }
+
+        private AsymmetricKeyParameter GetCAAsymetrycKeyParameter()
+        {
+            using (FileStream fs = new FileStream(CAFilePfx, FileMode.Open, FileAccess.Read))
+            {
+                // Parse the PKCS#12 store
+                var b = new Pkcs12StoreBuilder();
+                var pkcs12 = b.Build();
+                pkcs12.Load(fs, "Abc123".ToCharArray());
+
+                // Iterate over all aliases in the PFX
+                foreach (string alias in pkcs12.Aliases)
+                {
+                    // Find the private key entry
+                    if (pkcs12.IsKeyEntry(alias))
+                    {
+                        // Extract the private key as AsymmetricKeyParameter
+                        AsymmetricKeyEntry keyEntry = pkcs12.GetKey(alias);
+                        return keyEntry.Key;
+                    }
+                }
+            }
+
+            return null;
         }
 
         private bool VerifyPassword()
@@ -143,10 +219,9 @@ namespace SimpleCA.Services
 
         public CertificateData GenerateCertificate(CertRequest certrequest)
         {
-            using (RSA rsa = RSA.Create(4096))
+            using (RSA rsa = RSA.Create(2048))
             {
                 var ca = GetCA();
-                var capublic = GetPublicCA();
 
                 var distinguishedName = new X500DistinguishedName(certrequest.ToString());
 
@@ -154,19 +229,24 @@ namespace SimpleCA.Services
 
                 certificateRequest.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false)); // Not a CA
                 certificateRequest.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment | X509KeyUsageFlags.NonRepudiation | X509KeyUsageFlags.DataEncipherment, true));
-                certificateRequest.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new Oid("1.3.6.1.5.5.7.3.2") }, true)); // Client Authentication
+                //certificateRequest.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new Oid("1.3.6.1.5.5.7.3.2") }, true)); // Client Authentication
                 certificateRequest.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(certificateRequest.PublicKey, false));
 
                 // Authority Key Identifier
-                var aki = new X509SubjectKeyIdentifierExtension(ca.PublicKey, false);
-                certificateRequest.CertificateExtensions.Add(new X509Extension(new AsnEncodedData(new Oid("2.5.29.35"), aki.RawData), false));
+                //var aki = new X509SubjectKeyIdentifierExtension(ca.PublicKey, false);
+                //certificateRequest.CertificateExtensions.Add(new X509Extension(new AsnEncodedData(new Oid("2.5.29.35"), aki.RawData), false));
 
                 var hosts = Environment.GetEnvironmentVariable("CRL_HOSTS")?.Split(';') ?? ["http://localhost"];
-                hosts = hosts.Select(x => $"{x}/revocation/revocation.crl").ToArray();
-                certificateRequest.CertificateExtensions.Add(CertificateRevocationListBuilder.BuildCrlDistributionPointExtension(hosts));
+                var hostscrl = hosts.Select(x => $"{x}/revocation/revocation.crl").ToArray();
+                var hostocsp = hosts.Select(x => $"{x}/revocation/ocsp").ToArray();
+
+                certificateRequest.CertificateExtensions.Add(CertificateRevocationListBuilder.BuildCrlDistributionPointExtension(hostscrl));
+                certificateRequest.CertificateExtensions.Add(CreateOcspAiaExtension(hostocsp));
 
                 var serial = Guid.NewGuid().ToByteArray();
                 var certificate = certificateRequest.Create(ca, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(3), serial);
+
+                certificate = certificate.CopyWithPrivateKey(rsa);
 
                 //X509Certificate2Collection chain = [capublic, certificate];
 
@@ -183,6 +263,27 @@ namespace SimpleCA.Services
             }
         }
 
+        private X509Extension CreateOcspAiaExtension(string[] ocspUrls)
+        {
+            // Create an ASN.1 Sequence to hold OCSP access descriptions
+            var aiaSeq = new Asn1EncodableVector();
+
+            foreach (string ocspUrl in ocspUrls)
+            {
+                // Create an access description for each OCSP URL
+                var accessDescription = new AccessDescription(
+                    AccessDescription.IdADOcsp,
+                    new GeneralName(GeneralName.UniformResourceIdentifier, ocspUrl)
+                );
+
+                aiaSeq.Add(accessDescription);
+            }
+
+            // Encode the sequence as an Authority Information Access extension
+            var aiaExtension = new DerSequence(aiaSeq);
+            return new X509Extension(new AsnEncodedData(new Oid("1.3.6.1.5.5.7.1.1"), aiaExtension.GetEncoded()), false);
+        }
+
         public void Revoke(byte[] certpk)
         {
             EnsureCrlCreated();
@@ -197,6 +298,15 @@ namespace SimpleCA.Services
             currentCrlNumber++;
 
             SaveCrl(currentCrl, currentCrlNumber);
+        }
+
+        private X509Crl GetCrlObj()
+        {
+            var currCrlData = GetCrl();
+
+            X509CrlParser crlParser = new X509CrlParser();
+            X509Crl x509Crl = crlParser.ReadCrl(currCrlData);
+            return x509Crl;
         }
 
         private string GenPwd(int length)

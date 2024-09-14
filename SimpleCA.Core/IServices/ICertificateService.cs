@@ -9,5 +9,6 @@ namespace SimpleCA.Core.IServices
         byte[] GetCACert();
         byte[] GetCrl();
         void Revoke(byte[] certPK);
+        byte[] VerifyOcsp(byte[] request);
     }
 }
